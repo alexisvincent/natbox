@@ -20,13 +20,12 @@
       @(s/try-put! stream (nippy/freeze msg) 0)
       (catch Exception e false))))
 
-(defn stream-handler [msg-handler]
-  (fn [stream info]
-    "tcp stream messages -> deserielise -> msg-handler"
-    (s/consume
-      (fn [data]
-        (msg-handler
-          stream
-          (if (not (nil? data))
-            (nippy/thaw data))))
-      stream)))
+(defn consume-edn-stream [stream msg-handler]
+  "deserialize tcp stream messages and pass edn to msg-handler"
+  (s/consume
+    (fn [data]
+      (msg-handler
+        (if (not (nil? data))
+          (nippy/thaw data))))
+    stream))
+

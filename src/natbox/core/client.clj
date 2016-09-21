@@ -3,50 +3,89 @@
             [manifold.stream :as s]
             aleph.tcp
             [natbox.core.util :as util]
-            [clojure.core.match :refer [match]]))
+            [clojure.core.match :refer [match]]
+            [natbox.networking.ip :as ip]
+            [natbox.networking.comms :as comms]))
 
-(declare init start stop prompt make-stream)
+(declare init start stop prompt make-stream worker)
 
-(defn init [server-ip server-port]
-    (atom {:kind        "client"
-           :server-ip   server-ip
-           :server-port (read-string server-port)}))
+(defn init [int-or-ext server-ip server-port]
+  (atom {:kind        "client"
+         :internal?  (= int-or-ext "internal")
+         :server/ip   server-ip
+         :server/port (read-string server-port)
+         :mac         (ip/random-mac)}))
+
 
 (defn start [this]
-  (let [stream (make-stream (:server-ip @this) (:server-port @this))
-        write (util/write stream)]
-    (swap! this (fn [current]
-                  (assoc current
-                    :stream stream
-                    :write write))))
+  ; Create stream to server and construct a function to write from the stream
+  (let [stream (make-stream this (:server/ip @this) (:server/port @this))
+        write (util/write stream)
+        update (fn [updater]
+                 (swap! this updater))
+        worker (worker this 1000)]
+
+    ;; Assign to atom the stream and write function
+
+    (update #(assoc %
+                :stream stream
+                :write write
+                :worker worker
+                :update update))
+
+    ;; Request an ip address
+    (let [mac (:mac @this)]
+      (if (:internal? @this)
+        ((:write @this) (comms/request-ip mac))
+        (let [ip (ip/random-external-ip)]
+          (update #(assoc % :ip ip))
+          ((:write @this) (comms/inform-external-ip mac ip))))))
+
+  ;; Prompt user for input
   ((util/prompt (prompt this) "client >> ")))
 
-(defn stop [kernel]
-  (s/close! (:stream @kernel)))
+(defn stop [this]
+  (future-cancel (:worker @this))
+  (s/close! (:stream @this)))
 
-(defn msg-handler [stream msg]
-  (println "Client Recieved " msg))
+(defn msg-handler [client stream msg]
+  (match (:label msg)
+         'assign-ip
+         (let [ip (get-in msg [:payload :ip])]
+           ;; associate with the client atom it's ip
+           (:update client) #(assoc % :ip ip)
+           (println ":: Client aquired " ip))))
 
-(defn make-stream [server-ip server-port]
+
+(defn worker [client delay]
+  (future
+    (while (not (Thread/interrupted))
+      (Thread/sleep delay)
+      ((:write @client) (comms/heartbeat (:mac @client))))))
+
+
+(defn make-stream [client server-ip server-port]
   "Create a new "
   (let [stream @(aleph.tcp/client {:host server-ip :port server-port})]
-    ((util/stream-handler msg-handler) stream {:info "Some info object"})
+    (util/consume-edn-stream stream (partial msg-handler client stream))
     stream))
 
 (defn prompt-msg [client]
   ((util/prompt
-    (fn [dest-ip]
-      ((util/prompt
-        (fn [dest-port]
-          ((util/prompt
-            (fn [msg]
-              ((:write @client) (tcp/packet "source ip" "source port" dest-ip dest-port msg))
-              false)
-            "msg >> "))
-          false)
-        "msg > port >> "))
-      false)
-    "msg > ip >> "))
+     (fn [dest-ip]
+       ((util/prompt
+          (fn [dest-port]
+            ((util/prompt
+               (fn [msg]
+                 ((:write @client) (comms/packet
+                                     (:mac @client)
+                                     (tcp/packet (:ip @client) "source port" dest-ip dest-port msg)))
+                 false)
+               "msg >> "))
+            false)
+          "msg > port >> "))
+       false)
+     "msg > ip >> "))
   true)
 
 

@@ -2,6 +2,7 @@
   (:require [natbox.core.kernel :as kernel]))
 
 (defn -main [& args]
-  (let [instance (apply kernel/init args)]
-    (kernel/start instance)
-    (kernel/stop instance)))
+  (doto (apply kernel/init args)
+    (kernel/start)
+    (kernel/stop))
+  (System/exit 0))

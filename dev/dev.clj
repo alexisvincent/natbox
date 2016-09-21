@@ -10,8 +10,8 @@
     [natbox.core.kernel :as kernel]))
 
 
-(def server-args ["server" "8000"])
-(def client-args ["client" "localhost" "8000"])
+(def server-args ["server" "8000" "10.0.0.0/24"])
+(def client-args ["client" "internal" "localhost" "8000"])
 
 (def repl-instance nil)
 

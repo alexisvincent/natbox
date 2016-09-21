@@ -1,18 +1,26 @@
 (ns natbox.networking.ip
   (:require [taoensso.nippy :as nippy]
-            [pandect.algo.sha1 :as pandect]))
+            [pandect.algo.sha1 :as pandect]
+            [clojure.network.ip :as netip]))
 
 (defn calculate-checksum [packet]
   (->> (dissoc packet :payload :checksum)
        (nippy/freeze)
        (pandect/sha1)))
 
+(def make-network netip/make-network)
+(def ip-address netip/ip-address)
+
+(defn random-mac []
+   (->> #(rand-int 256)
+        (repeatedly)
+        (take 6)
+        (map #(Integer/toString % 16))))
 
 (defn verify-checksum [packet]
   (=
     (calculate-checksum packet)
     (:checksum packet)))
-
 
 (defn packet [proto src dest payload]
   (let [header
@@ -60,5 +68,12 @@
     ; 16 bits that contain the Header Checksum, a number used
     ; in error detection
     (assoc header :checksum checksum)))
+
+(def external-ips (seq (make-network "123.123.123.123/24")))
+
+(defn random-external-ip []
+  (do
+    (def external-ips (next external-ips))
+    (ip-address (first external-ips))))
 
 
