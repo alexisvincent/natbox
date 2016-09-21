@@ -11,7 +11,7 @@
 
 (defn init [int-or-ext server-ip server-port]
   (atom {:kind        "client"
-         :internal?   (= int-or-ext "internal")
+         :internal    (= int-or-ext "internal")
          :server/ip   server-ip
          :server/port (read-string server-port)
          :mac         (ip/random-mac)}))
@@ -22,7 +22,7 @@
 (defn start [this]
   ; Create stream to server and construct a function to write from the stream
   (let [stream (make-stream this (:server/ip @this) (:server/port @this))
-        worker (worker this 1000)]
+        worker (worker this 10000)]
 
     ;; Assign to atom the stream and write function
     (swap! this #(assoc %
@@ -31,10 +31,11 @@
 
     ;; Request an ip address
     (let [mac (:mac @this)]
-      (if (:internal? @this)
+      (if (:internal @this)
         (write this (comms/request-ip mac))
         (let [ip (ip/random-external-ip)]
           (swap! this #(assoc % :ip ip))
+          (println "\n :: Client : Connected to Natbox as external client " ip)
           (write this (comms/inform-external-ip mac ip))))))
 
   ;; Prompt user for input
@@ -49,8 +50,14 @@
          'assign-ip
          (let [ip (get-in msg [:payload :ip])]
            ;; associate with the client atom it's ip
-           (:update client) #(assoc % :ip ip)
-           (println ":: Client aquired " ip))))
+           (swap! client #(assoc % :ip ip))
+           (println "\n :: Client : Recieved Allocated IP " (:ip @client)))
+
+         'packet
+         (do
+           (println "\n :: Client : Packet Recieved from " (get-in msg [:payload :src]) "\n\n" (:payload msg) "\n"))
+
+         :else (println "Unmatched " msg)))
 
 
 (defn worker [client delay]
@@ -76,7 +83,7 @@
                  (write client
                         (comms/packet
                           (:mac @client)
-                          (tcp/packet (:ip @client) "source port" dest-ip dest-port msg)))
+                          (tcp/packet (:ip @client) (rand-int 80000) dest-ip (read-string dest-port) msg)))
                  false)
                "msg >> "))
             false)

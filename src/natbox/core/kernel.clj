@@ -24,4 +24,3 @@
   (if (isClient? instance)
     (client/stop instance)
     (server/stop instance)))
-

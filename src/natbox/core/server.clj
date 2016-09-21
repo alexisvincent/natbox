@@ -7,23 +7,45 @@
             [natbox.core.client :as client]
             [natbox.networking.comms :as comms]))
 
-(declare init start stop prompt-handler msg-handler update-client-table)
+(declare init start stop prompt-handler msg-handler update-port-table update-client-table)
 
 (defn init [port network]
   "Initialise the server kernel object"
-  (let [network (next (seq (ip/make-network network)))]
+  (let [network (next (seq (ip/make-network network)))
+        mac (ip/random-mac)]
     (atom {:kind           "server"
            :port           (read-string port)
-           :mac            (ip/random-mac)
+           :mac            mac
            :network        network
            :natbox-ip      (first network)
            :assignable-ips (next network)
-           :client-table   {}})))
+           :client-table   {mac {:internal true
+                                 :natbox   true
+                                 :mac      mac
+                                 :ip       "0.0.0.0"}}
+           :port-table     {}
+           :halflife       10000})))
+
 
 (defn worker [server delay]
   (future
     (while (not (Thread/interrupted))
-      (Thread/sleep delay))))
+      (Thread/sleep delay)
+      (when (not (Thread/interrupted))
+        ;(println "here")
+        (swap!
+          server
+          (fn [current]
+            (let [halflife (get current :halflife)]
+              (update
+                current :port-table
+                (fn [port-table]
+                  (into {}
+                    (filter
+                      (fn [[k v]]
+                        (< (- (System/currentTimeMillis) (:time v)) halflife))
+                      port-table)))))))))))
+
 
 (defn start [this]
   ; Start the tcp server
@@ -49,10 +71,9 @@
                                      client-info)))
                                (first)))
 
-
              :tcp-server tcp-server)))
 
-  ((:lookup-ip @this) "123")
+  ;((:lookup-ip @this) "123")
 
   ; Start the server prompt
   ((util/prompt (partial prompt-handler this) "server >> ")))
@@ -62,19 +83,64 @@
   (future-cancel (:worker @this))
   (.close (:tcp-server @this)))
 
-(defn packet-handler [server client-info packet]
+(defn packet-handler [server src-client packet]
   (let [dest-client ((:lookup-ip @server) (:dest packet))]
 
     (when (not (nil? dest-client))
-      (if (:internal? client-info)
-        (do
-          ; Packet from internal client
-          (println "Forwarding packet"))
-        (do
-          ; Packet from external client
-          (println "Got packet from external"))))
+      (if (:internal src-client)
+        ;internal src
+        (if (:internal dest-client)
 
-    (println "Packet FROM " (:mac client-info) " " (:ip client-info))))
+          ; internal -> internal
+          (do
+            (println "\n :: Server : Forwarding packet [ " (:ip src-client) " -> " (:ip dest-client) "]\n\n")
+            (util/write (:stream dest-client) (comms/packet (:mac @server) packet)))
+
+          ; internal -> external
+          (let [src-port (update-port-table server src-client (:port (:payload src-client)))
+                updated-packet (-> packet
+                                   (update-in [:payload] #(assoc % :src-port src-port))
+                                   (assoc :src "0.0.0.0"))
+                checksum (ip/calculate-checksum updated-packet)
+                packet-with-checksum (assoc updated-packet :checksum checksum)]
+
+            (println
+              "\n :: Server : Forwarding packet "
+              (:ip src-client) ":" (:src-port (:payload packet))
+              " -> 0.0.0.0 :" (:src-port (:payload updated-packet))
+              " ->" (get updated-packet :dest) ":" (get-in updated-packet [:payload :dest-port] "\n\n"))
+            (util/write (:stream dest-client) (comms/packet (:mac @server) packet-with-checksum))))
+
+        ;external src
+        (when (and (:internal dest-client) (:natbox dest-client))
+          ;external client sent packet to server/natbox
+          (let [dest-port (get-in packet [:payload :dest-port])
+                port-mapping (get-in @server [:port-table dest-port])]
+
+            (when (not (nil? port-mapping))
+              (let [updated-packet (-> packet
+                                       (update-in [:payload] #(assoc % :dest-port (:src-port port-mapping)))
+                                       (assoc :dest (:ip (:client-info port-mapping))))
+                    checksum (ip/calculate-checksum updated-packet)
+                    packet-with-checksum (assoc updated-packet :checksum checksum)]
+                (util/write (get-in port-mapping [:client-info :stream]) (comms/packet (get @server :mac) packet-with-checksum))))))))))
+
+
+(defn update-port-table [server client-info src-port]
+  "Update the local port table to point to relevent client and return allocated port"
+  (let [port (rand-int 80000)]
+    (swap!
+      server
+      (fn [current]
+        current
+        (update
+          current :port-table
+          (fn [port-table]
+            (assoc port-table
+              port {:src-port src-port :port port :time (System/currentTimeMillis) :client-info client-info})))))
+    port))
+
+
 
 (defn update-client-table [mac server stream internal? ip-if-external]
   "Allocates an IP address to a mac address (taking into account current server state)"
@@ -87,22 +153,22 @@
                  ; Update client table with new internal client info
                  (update-in [:client-table]
                             #(assoc % mac {;this is an internal client
-                                           :internal? true
+                                           :internal true
                                            ; Ip being assigned to mac
-                                           :ip        (ip/ip-address
-                                                        (first
-                                                          (:assignable-ips current)))
-                                           :mac       mac
+                                           :ip       (ip/ip-address
+                                                       (first
+                                                         (:assignable-ips current)))
+                                           :mac      mac
                                            ; The stream associated with this mac
-                                           :stream    stream})))
+                                           :stream   stream})))
              (-> current
                  ; Update client table with new external client info
                  (update-in [:client-table]
                             #(assoc % mac {; This is an external client
-                                           :internal? false
-                                           :mac       mac
-                                           :ip        ip-if-external
-                                           :stream    stream}))))))
+                                           :internal false
+                                           :mac      mac
+                                           :ip       ip-if-external
+                                           :stream   stream}))))))
 
 
 
