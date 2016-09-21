@@ -11,38 +11,34 @@
 
 (defn init [int-or-ext server-ip server-port]
   (atom {:kind        "client"
-         :internal?  (= int-or-ext "internal")
+         :internal?   (= int-or-ext "internal")
          :server/ip   server-ip
          :server/port (read-string server-port)
          :mac         (ip/random-mac)}))
 
+(defn write [client msg]
+  (util/write (:stream @client) msg))
 
 (defn start [this]
   ; Create stream to server and construct a function to write from the stream
   (let [stream (make-stream this (:server/ip @this) (:server/port @this))
-        write (util/write stream)
-        update (fn [updater]
-                 (swap! this updater))
         worker (worker this 1000)]
 
     ;; Assign to atom the stream and write function
-
-    (update #(assoc %
-                :stream stream
-                :write write
-                :worker worker
-                :update update))
+    (swap! this #(assoc %
+                  :stream stream
+                  :worker worker))
 
     ;; Request an ip address
     (let [mac (:mac @this)]
       (if (:internal? @this)
-        ((:write @this) (comms/request-ip mac))
+        (write this (comms/request-ip mac))
         (let [ip (ip/random-external-ip)]
-          (update #(assoc % :ip ip))
-          ((:write @this) (comms/inform-external-ip mac ip))))))
+          (swap! this #(assoc % :ip ip))
+          (write this (comms/inform-external-ip mac ip))))))
 
   ;; Prompt user for input
-  ((util/prompt (prompt this) "client >> ")))
+  ((util/prompt (partial prompt this) "client >> ")))
 
 (defn stop [this]
   (future-cancel (:worker @this))
@@ -61,7 +57,7 @@
   (future
     (while (not (Thread/interrupted))
       (Thread/sleep delay)
-      ((:write @client) (comms/heartbeat (:mac @client))))))
+      (write client (comms/heartbeat (:mac @client))))))
 
 
 (defn make-stream [client server-ip server-port]
@@ -77,9 +73,10 @@
           (fn [dest-port]
             ((util/prompt
                (fn [msg]
-                 ((:write @client) (comms/packet
-                                     (:mac @client)
-                                     (tcp/packet (:ip @client) "source port" dest-ip dest-port msg)))
+                 (write client
+                        (comms/packet
+                          (:mac @client)
+                          (tcp/packet (:ip @client) "source port" dest-ip dest-port msg)))
                  false)
                "msg >> "))
             false)
@@ -89,13 +86,12 @@
   true)
 
 
-(defn prompt [client]
+(defn prompt [client input]
   "Prompt for and handle user input"
-  (fn [input]
-    (match input
-           "exit" false
-           "quit" false
+  (match input
+         "exit" false
+         "quit" false
 
-           "msg" (prompt-msg client)
+         "msg" (prompt-msg client)
 
-           :else true)))
+         :else true))
