@@ -22,7 +22,7 @@
            :client-table   {mac {:internal true
                                  :natbox   true
                                  :mac      mac
-                                 :ip       "0.0.0.0"}}
+                                 :ip       "10.0.0.1"}}
            :port-table     {}
            :halflife       10000})))
 
